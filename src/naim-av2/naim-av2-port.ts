@@ -1,9 +1,13 @@
 import SerialPort from 'serialport';
 import { EventEmitter } from 'events';
+import { debug }  from 'debug';
+
+const log = debug('pi-naim-av2:naim-av2-port');
 
 export interface NaimAV2PortOptions {
     comPort: string; // '/dev/ttyUSB0'
 }
+
 
 /**
  * Low-level interface to communicate with the Naim AV2 processor/DAC/preamp.
@@ -53,44 +57,58 @@ export class NaimAV2Port extends EventEmitter {
         this.serial = new SerialPort(
             options.comPort,
             {
+                // Settings for Naim AV2 from spec
                 baudRate: 9600,
                 dataBits: 8,
                 stopBits: 1,
                 parity: 'none',
-                autoOpen: false
+                rtscts: false,
+                xany: false,
+                xoff: false,
+                xon: false
             }
+        );
+
+        // Ignore break characters
+        this.serial.set({brk: false});
+
+        // Parse out EOL characters
+        const parser = this.serial.pipe(
+            new SerialPort.parsers.Delimiter(
+                {
+                    delimiter: Buffer.from(NaimAV2Port.MESSAGE_EOL, 'ascii')
+                }
+            )
         );
 
         // Emit incoming data from the AV2
         const responseHeader = NaimAV2Port.RESPONSE_HEADER + NaimAV2Port.MESSAGE_DEVICE_ID + NaimAV2Port.MESSAGE_SPACE;
-        this.serial.on('data', (chunk: Buffer) => {
+        parser.on('data', (chunk: Buffer) => {
             const response = chunk.toString();
+            log('<<< Raw data from AV2: %s', response);
             // Remove "#AV2 " from start
             if (response.substr(0, 5) !== responseHeader) {
-                console.log('ERROR response', response);
+                log('ERROR');
                 return;
             }
-            this.emit('data', response.substr(5).trimEnd());
+            this.emit('command', response.substr(5).trimEnd());
         });
 
         // Translate incoming data packets
 
         // When the port opens, detect whether we have a new command to send periodically
         this.serial.on('open', () => {
+            log('Serial port opened: %o', options);
             this.sendInterval = setInterval(() => {
                 this.processCommandQueue();
             }, NaimAV2Port.COMMAND_QUEUE_INTERVAL);
+            this.emit('ready');
         });
 
         // Log errors
         this.serial.on('error', (err) => {
-            console.log(err);
+            log('Serial port error: %O', err);
         });
-
-        // Open the serial connection
-        this.serial.open();
-
-        // TODO: Handle the connection closing
     }
 
     /**
@@ -104,6 +122,7 @@ export class NaimAV2Port extends EventEmitter {
      */
     public sendCommand(command: string) {
         this.sendBuffer.push(command);
+        log('Queued command: %s', command);
     }
 
     /**
@@ -117,26 +136,37 @@ export class NaimAV2Port extends EventEmitter {
         const command: string = this.sendBuffer.shift()!; // '!' here is a 'non-null assertion' - tells typescript
                                                              // that this value is definitely not undefined, since array.shift()
                                                              // returns type 'string | undefined'.
-        const timeSinceLast = this.lastSendCommandEndTime - Date.now();
+        const timeSinceLast = Date.now() - this.lastSendCommandEndTime;
+        const messageDelay = timeSinceLast < 105;
+        const headerDelay = timeSinceLast > 200;
+        log('Sending command: %O', {command, timeSinceLast, messageDelay, headerDelay});
+        // NOTE: Must write to the serial port using Buffer rather than string, to avoid
+        // automatically sending EOL characters for each write()
         setTimeout(() => {
-            this.serial.write(NaimAV2Port.MESSAGE_HEADER);
+            this.serial.write(Buffer.from(NaimAV2Port.MESSAGE_HEADER, 'ascii'));
             this.serial.drain(() => {
                 setTimeout(() => {
-                    this.serial.write(NaimAV2Port.MESSAGE_HEADER);
-                    this.serial.write(NaimAV2Port.MESSAGE_DEVICE_ID);
-                    this.serial.write(NaimAV2Port.MESSAGE_SPACE);
-                    this.serial.write(command);
-                    this.serial.write(NaimAV2Port.MESSAGE_EOL);
+                    this.serial.write(
+                        Buffer.from(
+                            NaimAV2Port.MESSAGE_HEADER +
+                            NaimAV2Port.MESSAGE_DEVICE_ID +
+                            NaimAV2Port.MESSAGE_SPACE +
+                            command +
+                            NaimAV2Port.MESSAGE_EOL,
+                            'ascii'
+                        )
+                    );
                     this.serial.drain(() => {
                         // Once command has completed sending, record what time
                         this.lastSendCommandEndTime = Date.now();
                         // Mark the queue as ready to send the next command
                         this.sending = false;
+                        log('Sent command: %s', command);
                     });
-                }, timeSinceLast > 200 ? 25 : 0); // If it's been longer than 200ms, insert a 25ms
+                }, headerDelay ? 25 : 0); // If it's been longer than 200ms, insert a 25ms
                                                   // delay between first and second header character
             });
-        }, timeSinceLast < 105 ? (105 - timeSinceLast) : 0); // Make sure there's been at least 105ms between commands
+        }, messageDelay ? (105 - timeSinceLast) : 0); // Make sure there's been at least 105ms between commands
     }
 
 }

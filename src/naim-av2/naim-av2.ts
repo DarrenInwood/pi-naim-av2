@@ -1,7 +1,10 @@
+import { debug } from "debug";
 import { EventEmitter } from "events";
 import { NaimAV2Commands, NaimAV2Responses } from "./naim-av2-commands";
 import { NaimAV2Port } from "./naim-av2-port";
-import { NaimAV2CurrentDecodeMode, NaimAV2CurrentInput, NaimAV2ExtraState, NaimAV2FirmwareVersionState, NaimAV2InputLabel, NaimAV2InputMenuState, NaimAV2SoftwareVersionState, NaimAV2SpeakerMenuState, NaimAV2SpeakerSize, NaimAV2State, NaimAV2SystemState } from "./naim-av2-state";
+import { NaimAV2CurrentDecodeMode, NaimAV2CurrentInput, NaimAV2InputLabel, NaimAV2SpeakerSize, NaimAV2State } from "./naim-av2-state";
+
+const log = debug('pi-naim-av2:naim-av2');
 
 /**
  * Options passed to the NaimAV2 constructor
@@ -108,21 +111,28 @@ export class NaimAV2 extends EventEmitter {
         });
 
         // Incoming packets update the internal state
-        this.port.on('data', (command) => {
+        this.port.on('command', (command: string) => {
+            log('Command received by NaimAV2: ' + command);
             this.processResponse(command);
+        });
+
+        this.on('stateChange', (state: NaimAV2State) => {
+            log('State changed', state);
         });
 
         // Tell the AV2 to send back verbose responses
         // This ensures each command that changes a setting triggers a response back that updates the internal state.
-        this.setVerbose(true);
+        this.port.on('ready', () => {
+            this.setVerbose(true);
 
-        // Get all initial state from the AV2
-        this.port.sendCommand(NaimAV2Commands.STATUS_QUERY);
-        this.port.sendCommand(NaimAV2Commands.INPUT_MENU_QUERY);
-        this.port.sendCommand(NaimAV2Commands.SPEAKER_MENU_QUERY);
-        this.port.sendCommand(NaimAV2Commands.SOFTWARE_VERSION_QUERY);
-        this.port.sendCommand(NaimAV2Commands.FIRMWARE_VERSION_QUERY);
-        this.port.sendCommand(NaimAV2Commands.EXTRA_STATUS_QUERY);
+            // Get all initial state from the AV2
+            this.port.sendCommand(NaimAV2Commands.STATUS_QUERY);
+            this.port.sendCommand(NaimAV2Commands.INPUT_MENU_QUERY);
+            this.port.sendCommand(NaimAV2Commands.SPEAKER_MENU_QUERY);
+            this.port.sendCommand(NaimAV2Commands.SOFTWARE_VERSION_QUERY);
+            this.port.sendCommand(NaimAV2Commands.FIRMWARE_VERSION_QUERY);
+            this.port.sendCommand(NaimAV2Commands.EXTRA_STATUS_QUERY);    
+        });
     }
 
     /**
@@ -447,6 +457,7 @@ export class NaimAV2 extends EventEmitter {
             case 'CO1': return this.state.input.vip1InputLabel;
             case 'CO2': return this.state.input.vip1InputLabel;
         }
+        return '---';
     }
 
     /**

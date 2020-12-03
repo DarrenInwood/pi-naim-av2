@@ -6,7 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "rimraf ./build && tsc",
-    "start:dev": "nodemon",
+    "start:dev": "DEBUG=\"pi-naim-av2:*\" nodemon",
     "start": "npm run build && node build/index.js"
   },
   "keywords": [],
@@ -21,7 +21,9 @@
   },
   "dependencies": {
     "@senzil/cec-monitor": "^2.1.0",
+    "@types/debug": "^4.1.5",
     "@types/serialport": "^8.0.1",
+    "debug": "^4.3.1",
     "serialport": "^9.0.2"
   }
 }
