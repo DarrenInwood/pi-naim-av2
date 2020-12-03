@@ -62,13 +62,8 @@ export class NaimAV2Port extends EventEmitter {
         );
 
         // Emit incoming data from the AV2
-        const parser = this.serial.pipe(new SerialPort.parsers.Delimiter(
-            {
-                delimiter: NaimAV2Port.MESSAGE_EOL
-            }
-        ));
         const responseHeader = NaimAV2Port.RESPONSE_HEADER + NaimAV2Port.MESSAGE_DEVICE_ID + NaimAV2Port.MESSAGE_SPACE;
-        parser.on('data', (chunk: Buffer) => {
+        this.serial.on('data', (chunk: Buffer) => {
             const response = chunk.toString();
             // Remove "#AV2 " from start
             if (response.substr(0, 5) !== responseHeader) {
