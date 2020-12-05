@@ -116,7 +116,7 @@ export class NaimAV2 extends EventEmitter {
             this.processResponse(command);
         });
 
-        this.on('stateChange', (state: NaimAV2State) => {
+        this.on('stateChange', (state: NaimAV2State, prevState: NaimAV2State) => {
             log('State changed', state);
         });
 
@@ -489,6 +489,7 @@ export class NaimAV2 extends EventEmitter {
      * Process a returning response from the AV2, and change internal state where applicable
      */
     protected processResponse(command: string) {
+        const prevState = JSON.parse(JSON.stringify(this.state));
         const commandCode = command.charAt(0);
         switch (commandCode) {
             case NaimAV2Responses.SYSTEM_STATUS:
@@ -559,7 +560,7 @@ export class NaimAV2 extends EventEmitter {
                     currentInput,
                     currentDecodeMode
                 };
-                this.emit('stateChange', this.state);
+                this.emit('stateChange', this.state, prevState);
             break;
             case NaimAV2Responses.INPUT_MENU_STATUS:                
                 this.state.input = {
@@ -577,7 +578,7 @@ export class NaimAV2 extends EventEmitter {
                     panoramaWidth: command.charCodeAt(12), // 0-7
                     panoramaDepth: command.charCodeAt(13) // 0-6
                 };
-                this.emit('stateChange', this.state);
+                this.emit('stateChange', this.state, prevState);
             break;
             case NaimAV2Responses.SPEAKER_MENU_STATUS:
                 this.state.speaker = {
@@ -604,17 +605,17 @@ export class NaimAV2 extends EventEmitter {
                     speakerLevelLeftSurround: command.charCodeAt(21) - 30,
                     speakerLevelSubwoofer: command.charCodeAt(22) - 30
                 };
-                this.emit('stateChange', this.state);
+                this.emit('stateChange', this.state, prevState);
             break;
             case NaimAV2Responses.SOFTWARE_VERSION:
                 // TODO: Check, is this charAt or charCodeAt?
                 this.state.software.softwareVersion = command.charCodeAt(1) + '.' + command.charCodeAt(2);
-                this.emit('stateChange', this.state);
+                this.emit('stateChange', this.state, prevState);
             break;
             case NaimAV2Responses.FIRMWARE_VERSION:
                 // TODO: Check, is this charAt or charCodeAt?
                 this.state.firmware.firmwareVersion = command.charCodeAt(1) + '.' + command.charCodeAt(2) + '.' + command.charCodeAt(3);
-                this.emit('stateChange', this.state);
+                this.emit('stateChange', this.state, prevState);
             break;
         }
     }
