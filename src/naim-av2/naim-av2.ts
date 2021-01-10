@@ -62,6 +62,8 @@ export class NaimAV2 extends EventEmitter {
 
     protected started: NaimAV2StartupState = NaimAV2StartupState.NONE;
 
+    protected volumeChangeTimeout: NodeJS.Timeout | null = null;
+
     protected state: NaimAV2State = {
         system: {
             power: false,
@@ -135,7 +137,62 @@ export class NaimAV2 extends EventEmitter {
         super();
         
         this.port = this.createNaimAV2(options);
-        this.cec = this.createCec(options);
+
+        const { osdName, tvInput } = options;
+
+        // We need to use monitor mode as CecMonitor appears to have an issue comparing
+        // sources/targets otherwise
+        this.cec = new CecMonitor(osdName, LogicalAddress.AUDIOSYSTEM, true);
+
+        // If the TV sets itself to active source, tell it we are using System Audio Mode
+        // (instructs TV to not keep track of volume itself)
+        // Also make sure the power is on, and the input is set correctly.
+        this.cec.on('ACTIVE_SOURCE', (packet: ParsedPacket, source: number) => {
+            log('ACTIVE_SOURCE  - %j (%s)', packet, source);
+            this.cec.executeOperation(
+                LogicalAddress.BROADCAST,
+                OperationCode.SYSTEM_AUDIO_MODE_STATUS,
+                [0x01]
+            );
+            this.cec.executeOperation(
+                LogicalAddress.TV,
+                OperationCode.GIVE_AUDIO_STATUS
+            );
+            if (!this.getPower()) {
+                this.setPower(true);
+            }
+            if (this.getInput() !== tvInput) {
+                this.setInput(tvInput);
+            }
+        });
+
+        this.cec.on('op.STANDBY', (packet: ParsedPacket) => {
+            if (packet.target !== LogicalAddress.AUDIOSYSTEM && packet.target !== LogicalAddress.BROADCAST) {
+                return;
+            }
+            log('STANDBY - %j', packet);
+            this.setPower(false);
+        });
+
+        this.cec.on('op.USER_CONTROL_PRESSED', (name: string, packet: ParsedPacket, button: UserControlButton) => {
+            if (packet.target !== LogicalAddress.AUDIOSYSTEM && packet.target !== LogicalAddress.BROADCAST) {
+                return;
+            }
+            if (button === UserControlButton.VOLUME_UP) {
+                log('BUTTON - volume up');
+                this.incrementVolume();
+                return;
+            }
+            if (button === UserControlButton.VOLUME_DOWN) {
+                log('BUTTON - volume down');
+                this.decrementVolume();
+                return;
+            }
+            log('BUTTON ignored - %n', button);
+        });
+
+        // Request active source
+        this.cec.executeOperation(LogicalAddress.TV, OperationCode.REQUEST_ACTIVE_SOURCE);
 
         this.on('stateChange', (state: NaimAV2State, prevState: NaimAV2State) => {
             const allStarted = NaimAV2StartupState.GOT_SYSTEM |
@@ -179,65 +236,6 @@ export class NaimAV2 extends EventEmitter {
         return port;
     }
 
-    protected createCec(options: NaimAV2Options): CecMonitor {
-        const { osdName, tvInput } = options;
-        // We need to use monitor mode as CecMonitor appears to have an issue comparing
-        // sources/targets otherwise
-        const cec = new CecMonitor(osdName, LogicalAddress.AUDIOSYSTEM, true);
-
-        // If the TV sets itself to active source, tell it we are using System Audio Mode
-        // (instructs TV to not keep track of volume itself)
-        // Also make sure the power is on, and the input is set correctly.
-        cec.on('ACTIVE_SOURCE', (packet: ParsedPacket, source: number) => {
-            log('ACTIVE_SOURCE  - %j (%s)', packet, source);
-            cec.executeOperation(
-                LogicalAddress.TV,
-                OperationCode.SYSTEM_AUDIO_MODE_STATUS,
-                [0x01]
-            );
-            cec.executeOperation(
-                LogicalAddress.TV,
-                OperationCode.GIVE_AUDIO_STATUS
-            );
-            if (!this.getPower()) {
-                this.setPower(true);
-            }
-            if (this.getInput() !== tvInput) {
-                this.setInput(tvInput);
-            }
-        });
-
-        cec.on('op.STANDBY', (packet: ParsedPacket) => {
-            if (packet.target !== LogicalAddress.AUDIOSYSTEM && packet.target !== LogicalAddress.BROADCAST) {
-                return;
-            }
-            log('STANDBY - %j', packet);
-            this.setPower(false);
-        });
-
-        cec.on('op.VENDOR_REMOTE_BUTTON_UP', (name: string, packet: ParsedPacket, button: UserControlButton) => {
-            if (packet.target !== LogicalAddress.AUDIOSYSTEM && packet.target !== LogicalAddress.BROADCAST) {
-                return;
-            }
-            if (button === UserControlButton.VOLUME_UP) {
-                log('BUTTON - volume up');
-                this.incrementVolume();
-                return;
-            }
-            if (button === UserControlButton.VOLUME_DOWN) {
-                log('BUTTON - volume down');
-                this.decrementVolume();
-                return;
-            }
-            log('BUTTON ignored - %n', button);
-        });
-
-        // Request active source
-        cec.executeOperation(LogicalAddress.TV, OperationCode.REQUEST_ACTIVE_SOURCE);
-
-        return cec;
-    }
-
     /**
      * Get the entire current state of the AV2; mostly useful for debugging
      */
@@ -266,10 +264,12 @@ export class NaimAV2 extends EventEmitter {
     public setPower(power: boolean) {
         if (power && !this.state.system.power) {
             this.port.sendCommand(NaimAV2Commands.ON);
+            this.state.system.power = true;
             return;
         }
         if (!power && this.state.system.power) {
             this.port.sendCommand(NaimAV2Commands.STANDBY);
+            this.state.system.power = false;
             return;
         }
     }
@@ -287,10 +287,12 @@ export class NaimAV2 extends EventEmitter {
     public setMute(mute: boolean) {
         if (mute && !this.state.system.mute) {
             this.port.sendCommand(NaimAV2Commands.MUTE_ON);
+            this.state.system.mute = true;
             return;
         }
         if (!mute && this.state.system.mute) {
             this.port.sendCommand(NaimAV2Commands.MUTE_OFF);
+            this.state.system.mute = false;
             return;
         }
     }
@@ -308,10 +310,12 @@ export class NaimAV2 extends EventEmitter {
     public setDisplay(display: boolean) {
         if (display && !this.state.system.display) {
             this.port.sendCommand(NaimAV2Commands.DISPLAY_ON);
+            this.state.system.display = true;
             return;
         }
         if (!display && this.state.system.display) {
             this.port.sendCommand(NaimAV2Commands.DISPLAY_OFF);
+            this.state.system.display = false;
             return;
         }
     }
@@ -329,10 +333,12 @@ export class NaimAV2 extends EventEmitter {
     public setMidnightMode(midnightMode: boolean) {
         if (midnightMode && !this.state.system.midnightMode) {
             this.port.sendCommand(NaimAV2Commands.MIDNIGHT_ON);
+            this.state.system.midnightMode = true;
             return;
         }
         if (!midnightMode && this.state.system.midnightMode) {
             this.port.sendCommand(NaimAV2Commands.MIDNIGHT_OFF);
+            this.state.system.midnightMode = false;
             return;
         }
     }
@@ -350,10 +356,12 @@ export class NaimAV2 extends EventEmitter {
     public setBassMix(bassMix: boolean) {
         if (bassMix && !this.state.system.bassMix) {
             this.port.sendCommand(NaimAV2Commands.BASS_MIX_ON);
+            this.state.system.bassMix = true;
             return;
         }
         if (!bassMix && this.state.system.bassMix) {
             this.port.sendCommand(NaimAV2Commands.BASS_MIX_OFF);
+            this.state.system.bassMix = false;
             return;
         }
     }
@@ -371,10 +379,12 @@ export class NaimAV2 extends EventEmitter {
     public setCineEq(cineEq: boolean) {
         if (cineEq && !this.state.system.cineEq) {
             this.port.sendCommand(NaimAV2Commands.CINE_EQ_ON);
+            this.state.system.cineEq = true;
             return;
         }
         if (!cineEq && this.state.system.cineEq) {
             this.port.sendCommand(NaimAV2Commands.CINE_EQ_OFF);
+            this.state.system.cineEq = false;
             return;
         }
     }
@@ -421,6 +431,7 @@ export class NaimAV2 extends EventEmitter {
             this.port.sendCommand(NaimAV2Commands.INPUT_CO2);
         }
         // TODO: How to set Multi input mode with VIP1 + VIP2?
+        this.state.system.currentInput = input;
     }
 
     // NOTE: there is no resetAllDefaults method, as this will turn off
@@ -431,6 +442,7 @@ export class NaimAV2 extends EventEmitter {
      */
     public resetInputDefaults() {
         this.port.sendCommand(NaimAV2Commands.RESET_INPUT_DEFAULTS);
+        this.port.sendCommand(NaimAV2Commands.INPUT_MENU_QUERY);
     }
 
     /**
@@ -438,6 +450,7 @@ export class NaimAV2 extends EventEmitter {
      */
     public resetSpeakerDefaults() {
         this.port.sendCommand(NaimAV2Commands.RESET_SPEAKER_DEFAULTS);
+        this.port.sendCommand(NaimAV2Commands.SPEAKER_MENU_QUERY);
     }
 
     /**
@@ -457,10 +470,12 @@ export class NaimAV2 extends EventEmitter {
     public setVerbose(verbose: boolean) {
         if (verbose && !this.state.system.verbose) {
             this.port.sendCommand(NaimAV2Commands.VERBOSE_ON);
+            this.state.system.verbose = true;
             return;
         }
         if (!verbose && this.state.system.verbose) {
             this.port.sendCommand(NaimAV2Commands.VERBOSE_OFF);
+            this.state.system.verbose = false;
             return;
         }
     }
@@ -542,8 +557,30 @@ export class NaimAV2 extends EventEmitter {
      * Set the AV2 volume level.  Accepts an int 0..99
      */
     public setVolume(volume: number) {
+        if (this.state.system.volume == volume) {
+            return;
+        }
+        if (this.volumeChangeTimeout) {
+            clearTimeout(this.volumeChangeTimeout);
+        }
         this.port.sendCommand(
             NaimAV2Commands.VOLUME + String.fromCharCode(volume)
+        );
+        this.state.system.volume = volume;
+        this.volumeChangeTimeout = setTimeout(this.syncTelevisionVolume.bind(this), 1000);
+    }
+
+    protected syncTelevisionVolume() {
+        log('Sync television volume');
+        // Requesting TV volume doesn't work - so we set the TV volume to match the AV2 instead...
+        // this.cec.sendCommand(
+        //     0x50,
+        //     OperationCode.GIVE_AUDIO_STATUS
+        // );
+        this.cec.sendCommand(
+            0x50,
+            OperationCode.REPORT_AUDIO_STATUS,
+            this.state.system.volume | (this.state.system.mute ? 0x80 : 0)
         );
     }
 
@@ -556,7 +593,7 @@ export class NaimAV2 extends EventEmitter {
             return; // 99 is max volume
         }
         let newVol = vol + 1;
-        if (newVol = 10) {
+        if (newVol == 10) {
             newVol = 11;
         }
         this.setVolume(newVol);
@@ -567,11 +604,11 @@ export class NaimAV2 extends EventEmitter {
      */
     public decrementVolume() {
         const vol = this.getVolume();
-        if (vol === 1) {
-            return; // 1 is min volume
+        if (vol === 0) {
+            return; // 0 is min volume
         }
         let newVol = vol - 1;
-        if (newVol = 10) {
+        if (newVol == 10) {
             newVol = 9;
         }
         this.setVolume(newVol);
