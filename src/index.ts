@@ -6,11 +6,13 @@ import MockBinding from "@serialport/binding-mock";
 const log = debug('pi-naim-av2:main');
 
 // // For testing without a serial port
-if (log.enabled) {
+if (log.enabled && false) {
     SerialPort.Binding = MockBinding;
     MockBinding.createPort('/dev/ttyUSB0', { echo: true, record: true })
 }
 
 const av2 = new NaimAV2({
-    comPort: '/dev/ttyUSB0'
+    comPort: '/dev/ttyUSB0',
+    osdName: 'Naim AV2',
+    tvInput: 'OP1'
 });

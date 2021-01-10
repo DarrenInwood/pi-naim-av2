@@ -3,6 +3,7 @@ import { EventEmitter } from "events";
 import { NaimAV2Commands, NaimAV2Responses } from "./naim-av2-commands";
 import { NaimAV2Port } from "./naim-av2-port";
 import { NaimAV2CurrentDecodeMode, NaimAV2CurrentInput, NaimAV2InputLabel, NaimAV2SpeakerSize, NaimAV2State } from "./naim-av2-state";
+import { CecMonitor, LogicalAddress, OperationCode, ParsedPacket, UserControlButton } from "hdmi-cec";
 
 const log = debug('pi-naim-av2:naim-av2');
 
@@ -10,7 +11,26 @@ const log = debug('pi-naim-av2:naim-av2');
  * Options passed to the NaimAV2 constructor
  */
 export interface NaimAV2Options {
-    comPort: string;
+    comPort: string; // com port the AV2 is connected to eg. '/dev/ttyUSB0'
+    osdName: string; // The OSD display name eg. 'AV2'
+    tvInput: NaimAV2CurrentInput; // The input the TV is connected to eg. 'OP1'
+}
+
+const defaultOptions: NaimAV2Options = {
+    comPort: '/dev/ttyUSB0',
+    osdName: 'Naim AV2',
+    tvInput: 'OP1'
+};
+
+export enum NaimAV2StartupState {
+    NONE = 0,
+    GOT_SYSTEM = 1,
+    GOT_INPUT = 2,
+    GOT_SPEAKER = 4,
+    GOT_SOFTWARE = 8,
+    GOT_FIRMWARE = 16,
+    GOT_EXTRA = 32,
+    READY = 64,
 }
 
 /**
@@ -29,11 +49,18 @@ export interface NaimAV2Options {
  *     av2.setInput('OP1');
  *     console.log('AV2 sync state:', av2.getState());
  *     console.log('AV2 power state:', av2.getPower());
+ * 
+ * Events:
+ * stateChange - emits new and previous states
+ * ready - all status bytes received from the unit on startup
  */
 
 export class NaimAV2 extends EventEmitter {
 
     protected port: NaimAV2Port;
+    protected cec: CecMonitor;
+
+    protected started: NaimAV2StartupState = NaimAV2StartupState.NONE;
 
     protected state: NaimAV2State = {
         system: {
@@ -103,26 +130,41 @@ export class NaimAV2 extends EventEmitter {
     };
 
     constructor(
-        options: NaimAV2Options
+        options: NaimAV2Options = defaultOptions
     ) {
         super();
-        this.port = new NaimAV2Port({
+        
+        this.port = this.createNaimAV2(options);
+        this.cec = this.createCec(options);
+
+        this.on('stateChange', (state: NaimAV2State, prevState: NaimAV2State) => {
+            const allStarted = NaimAV2StartupState.GOT_SYSTEM |
+                NaimAV2StartupState.GOT_INPUT |
+                NaimAV2StartupState.GOT_SPEAKER |
+                NaimAV2StartupState.GOT_SOFTWARE |
+                NaimAV2StartupState.GOT_FIRMWARE;
+            if (this.started >= allStarted && this.started != NaimAV2StartupState.READY) {
+                log('Syncing with CEC...');
+                this.started = NaimAV2StartupState.READY;
+                this.emit('ready');
+            }
+        });
+    }
+
+    protected createNaimAV2(options: NaimAV2Options): NaimAV2Port {
+        const port = new NaimAV2Port({
             comPort: options.comPort
         });
 
         // Incoming packets update the internal state
-        this.port.on('command', (command: string) => {
+        port.on('command', (command: string) => {
             log('Command received by NaimAV2: ' + command);
-            this.processResponse(command);
-        });
-
-        this.on('stateChange', (state: NaimAV2State, prevState: NaimAV2State) => {
-            log('State changed', state);
+            this.processAV2Response(command);
         });
 
         // Tell the AV2 to send back verbose responses
         // This ensures each command that changes a setting triggers a response back that updates the internal state.
-        this.port.on('ready', () => {
+        port.on('ready', () => {
             this.setVerbose(true);
 
             // Get all initial state from the AV2
@@ -133,6 +175,67 @@ export class NaimAV2 extends EventEmitter {
             this.port.sendCommand(NaimAV2Commands.FIRMWARE_VERSION_QUERY);
             this.port.sendCommand(NaimAV2Commands.EXTRA_STATUS_QUERY);    
         });
+
+        return port;
+    }
+
+    protected createCec(options: NaimAV2Options): CecMonitor {
+        const { osdName, tvInput } = options;
+        // We need to use monitor mode as CecMonitor appears to have an issue comparing
+        // sources/targets otherwise
+        const cec = new CecMonitor(osdName, LogicalAddress.AUDIOSYSTEM, true);
+
+        // If the TV sets itself to active source, tell it we are using System Audio Mode
+        // (instructs TV to not keep track of volume itself)
+        // Also make sure the power is on, and the input is set correctly.
+        cec.on('ACTIVE_SOURCE', (packet: ParsedPacket, source: number) => {
+            log('ACTIVE_SOURCE  - %j (%s)', packet, source);
+            cec.executeOperation(
+                LogicalAddress.TV,
+                OperationCode.SYSTEM_AUDIO_MODE_STATUS,
+                [0x01]
+            );
+            cec.executeOperation(
+                LogicalAddress.TV,
+                OperationCode.GIVE_AUDIO_STATUS
+            );
+            if (!this.getPower()) {
+                this.setPower(true);
+            }
+            if (this.getInput() !== tvInput) {
+                this.setInput(tvInput);
+            }
+        });
+
+        cec.on('op.STANDBY', (packet: ParsedPacket) => {
+            if (packet.target !== LogicalAddress.AUDIOSYSTEM && packet.target !== LogicalAddress.BROADCAST) {
+                return;
+            }
+            log('STANDBY - %j', packet);
+            this.setPower(false);
+        });
+
+        cec.on('op.VENDOR_REMOTE_BUTTON_UP', (name: string, packet: ParsedPacket, button: UserControlButton) => {
+            if (packet.target !== LogicalAddress.AUDIOSYSTEM && packet.target !== LogicalAddress.BROADCAST) {
+                return;
+            }
+            if (button === UserControlButton.VOLUME_UP) {
+                log('BUTTON - volume up');
+                this.incrementVolume();
+                return;
+            }
+            if (button === UserControlButton.VOLUME_DOWN) {
+                log('BUTTON - volume down');
+                this.decrementVolume();
+                return;
+            }
+            log('BUTTON ignored - %n', button);
+        });
+
+        // Request active source
+        cec.executeOperation(LogicalAddress.TV, OperationCode.REQUEST_ACTIVE_SOURCE);
+
+        return cec;
     }
 
     /**
@@ -444,6 +547,36 @@ export class NaimAV2 extends EventEmitter {
         );
     }
 
+    /**
+     * Increment the volume - skips 10 as this is broken, the AV2 sets volume to 0
+     */
+    public incrementVolume() {
+        const vol = this.getVolume();
+        if (vol === 99) {
+            return; // 99 is max volume
+        }
+        let newVol = vol + 1;
+        if (newVol = 10) {
+            newVol = 11;
+        }
+        this.setVolume(newVol);
+    }
+
+    /**
+     * Increment the volume - skips 10 as this is broken, the AV2 sets volume to 0
+     */
+    public decrementVolume() {
+        const vol = this.getVolume();
+        if (vol === 1) {
+            return; // 1 is min volume
+        }
+        let newVol = vol - 1;
+        if (newVol = 10) {
+            newVol = 9;
+        }
+        this.setVolume(newVol);
+    }
+
     public getInputLabel(input: NaimAV2CurrentInput): string {
         switch (input) {
             case 'VIP1': return this.state.input.vip1InputLabel;
@@ -488,7 +621,7 @@ export class NaimAV2 extends EventEmitter {
     /**
      * Process a returning response from the AV2, and change internal state where applicable
      */
-    protected processResponse(command: string) {
+    protected processAV2Response(command: string) {
         const prevState = JSON.parse(JSON.stringify(this.state));
         const commandCode = command.charAt(0);
         switch (commandCode) {
@@ -560,6 +693,7 @@ export class NaimAV2 extends EventEmitter {
                     currentInput,
                     currentDecodeMode
                 };
+                this.started = this.started | NaimAV2StartupState.GOT_SYSTEM;
                 this.emit('stateChange', this.state, prevState);
             break;
             case NaimAV2Responses.INPUT_MENU_STATUS:                
@@ -578,6 +712,7 @@ export class NaimAV2 extends EventEmitter {
                     panoramaWidth: command.charCodeAt(12), // 0-7
                     panoramaDepth: command.charCodeAt(13) // 0-6
                 };
+                this.started = this.started | NaimAV2StartupState.GOT_INPUT;
                 this.emit('stateChange', this.state, prevState);
             break;
             case NaimAV2Responses.SPEAKER_MENU_STATUS:
@@ -605,16 +740,19 @@ export class NaimAV2 extends EventEmitter {
                     speakerLevelLeftSurround: command.charCodeAt(21) - 30,
                     speakerLevelSubwoofer: command.charCodeAt(22) - 30
                 };
+                this.started = this.started | NaimAV2StartupState.GOT_SPEAKER;
                 this.emit('stateChange', this.state, prevState);
             break;
             case NaimAV2Responses.SOFTWARE_VERSION:
                 // TODO: Check, is this charAt or charCodeAt?
                 this.state.software.softwareVersion = command.charCodeAt(1) + '.' + command.charCodeAt(2);
+                this.started = this.started | NaimAV2StartupState.GOT_SOFTWARE;
                 this.emit('stateChange', this.state, prevState);
             break;
             case NaimAV2Responses.FIRMWARE_VERSION:
                 // TODO: Check, is this charAt or charCodeAt?
                 this.state.firmware.firmwareVersion = command.charCodeAt(1) + '.' + command.charCodeAt(2) + '.' + command.charCodeAt(3);
+                this.started = this.started | NaimAV2StartupState.GOT_FIRMWARE;
                 this.emit('stateChange', this.state, prevState);
             break;
         }

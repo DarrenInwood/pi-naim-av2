@@ -88,7 +88,7 @@ export class NaimAV2Port extends EventEmitter {
             log('<<< Raw data from AV2: %s', response);
             // Remove "#AV2 " from start
             if (response.substr(0, 5) !== responseHeader) {
-                log('ERROR');
+                log('ERROR: Command did not start with response header');
                 return;
             }
             this.emit('command', response.substr(5).trimEnd());
