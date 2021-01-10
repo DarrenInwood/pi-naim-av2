@@ -166,16 +166,49 @@ export class NaimAV2 extends EventEmitter {
             }
         });
 
-        this.cec.on('op.STANDBY', (packet: ParsedPacket) => {
+        // If the TV sends a standby message, and we're on it's input, turn off
+        this.cec.on('op.STANDBY', (key: string, packet: ParsedPacket) => {
             if (packet.target !== LogicalAddress.AUDIOSYSTEM && packet.target !== LogicalAddress.BROADCAST) {
+                log('STANDBY ignored - %j', packet);
+                return;
+            }
+            if (this.getInput() != options.tvInput) {
+                log('STANDBY ignored - AV2 not on TV input - %j', packet);
                 return;
             }
             log('STANDBY - %j', packet);
-            this.setPower(false);
+            if (this.getPower()) {
+                this.setPower(false);
+            }
         });
 
-        this.cec.on('op.USER_CONTROL_PRESSED', (name: string, packet: ParsedPacket, button: UserControlButton) => {
+        // If the TV reports it is on, and the AV2 is off, turn the AV2 on.
+        // If the TV reports it's off, and the AV2 is on, AND we're on the TV input, turn the AV2 off.
+        this.cec.on('op.REPORT_POWER_STATUS', (key: string, packet: ParsedPacket, status: number) => {
+            const STATUS_OFF = 1;
+            if (packet.source !== LogicalAddress.TV) {
+                log('REPORT_POWER_STATUS ignored - %j', packet);
+                return;
+            }
             if (packet.target !== LogicalAddress.AUDIOSYSTEM && packet.target !== LogicalAddress.BROADCAST) {
+                log('REPORT_POWER_STATUS ignored - %j', packet);
+                return;
+            }
+            if (status != STATUS_OFF && !this.getPower()) {
+                log('REPORT_POWER_STATUS turning AV2 on');
+                this.setPower(true);
+                return;
+            }
+            if (status == STATUS_OFF && this.getPower() && this.getInput() == options.tvInput) {
+                log('REPORT_POWER_STATUS turning AV2 off');
+                this.setPower(false);
+                return;
+            }
+        });
+
+        this.cec.on('op.USER_CONTROL_PRESSED', (key: string, packet: ParsedPacket, button: UserControlButton) => {
+            if (packet.target !== LogicalAddress.AUDIOSYSTEM && packet.target !== LogicalAddress.BROADCAST) {
+                log('BUTTON ignored - %n', button);
                 return;
             }
             if (button === UserControlButton.VOLUME_UP) {
@@ -188,11 +221,11 @@ export class NaimAV2 extends EventEmitter {
                 this.decrementVolume();
                 return;
             }
-            log('BUTTON ignored - %n', button);
+            log('BUTTON not implemented - %n', button);
         });
 
         // Request active source
-        this.cec.executeOperation(LogicalAddress.TV, OperationCode.REQUEST_ACTIVE_SOURCE);
+        this.cec.executeBroadcastOperation(OperationCode.REQUEST_ACTIVE_SOURCE);
 
         this.on('stateChange', (state: NaimAV2State, prevState: NaimAV2State) => {
             const allStarted = NaimAV2StartupState.GOT_SYSTEM |

@@ -43,3 +43,16 @@ repository:
 
 If you look at this script in `package.json`, it sets a `DEBUG` environment variable.  This indicates to
 the `debug` package what to output debug info for.
+
+## Building
+
+Run `npm run build`.  This will compile Typescript to Javascript.
+
+## Installing as a service
+
+An easy way to install as a service is via (PM2)[https://github.com/Unitech/pm2].
+
+1. Install PM2 globally on your Pi - `sudo npm install -g pm2`
+2. Start the application you've built - `cd build && pm2 start index.js --name 'pi-naim-av2'`
+3. Tell PM2 to start on boot - `pm2 startup` then copy/paste the generated output
+4. Tell PM2 to restart this process again on boot - `pm2 save`

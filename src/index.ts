@@ -14,5 +14,5 @@ if (log.enabled && false) {
 const av2 = new NaimAV2({
     comPort: '/dev/ttyUSB0',
     osdName: 'Naim AV2',
-    tvInput: 'OP1'
+    tvInput: 'OP2'
 });
