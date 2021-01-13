@@ -4,7 +4,7 @@ import { NaimAV2Commands, NaimAV2Responses } from "./naim-av2-commands";
 import { NaimAV2Port } from "./naim-av2-port";
 import { NaimAV2CurrentDecodeMode, NaimAV2CurrentInput, NaimAV2InputLabel, NaimAV2SpeakerSize, NaimAV2State } from "./naim-av2-state";
 import { CecMonitor, LogicalAddress, OperationCode, ParsedPacket, UserControlButton } from "hdmi-cec";
-
+import { MoodePlayer } from '../moode-player/moode-player';
 const log = debug('pi-naim-av2:naim-av2');
 
 /**
@@ -14,12 +14,14 @@ export interface NaimAV2Options {
     comPort: string; // com port the AV2 is connected to eg. '/dev/ttyUSB0'
     osdName: string; // The OSD display name eg. 'AV2'
     tvInput: NaimAV2CurrentInput; // The input the TV is connected to eg. 'OP1'
+    moodeInput: NaimAV2CurrentInput; // The input Moode is connected to eg. 'CO1'
 }
 
 const defaultOptions: NaimAV2Options = {
     comPort: '/dev/ttyUSB0',
     osdName: 'Naim AV2',
-    tvInput: 'OP1'
+    tvInput: 'OP1',
+    moodeInput: 'CO1'
 };
 
 export enum NaimAV2StartupState {
@@ -59,10 +61,20 @@ export class NaimAV2 extends EventEmitter {
 
     protected port: NaimAV2Port;
     protected cec: CecMonitor;
+    protected moode: MoodePlayer;
 
     protected started: NaimAV2StartupState = NaimAV2StartupState.NONE;
 
+    /**
+     * Timeout to tell the TV to set its volume according to the AV2 level
+     * after changing volumes; keypress events can result in them getting out of sync.
+     */
     protected volumeChangeTimeout: NodeJS.Timeout | null = null;
+
+    /**
+     * Interval to periodically refresh TV power state.
+     */
+    protected cecPowerSyncInterval: NodeJS.Timeout | null = null;
 
     protected state: NaimAV2State = {
         system: {
@@ -136,6 +148,14 @@ export class NaimAV2 extends EventEmitter {
     ) {
         super();
         
+        this.moode = new MoodePlayer();
+        this.moode.on('play', () => {
+            // Make sure the power is on and we're on the correct input
+        });
+        this.moode.on('stop', () => {
+            // If the TV is on, switch back to that input; otherwise turn off
+        });
+
         this.port = this.createNaimAV2(options);
 
         const { osdName, tvInput } = options;
@@ -226,6 +246,11 @@ export class NaimAV2 extends EventEmitter {
 
         // Request active source
         this.cec.executeBroadcastOperation(OperationCode.REQUEST_ACTIVE_SOURCE);
+
+        // Periodically refresh TV power state
+        this.cecPowerSyncInterval = setInterval(() => {
+            this.cec.executeOperation(LogicalAddress.TV, OperationCode.GIVE_DEVICE_POWER_STATUS);
+        }, 5000);
 
         this.on('stateChange', (state: NaimAV2State, prevState: NaimAV2State) => {
             const allStarted = NaimAV2StartupState.GOT_SYSTEM |
