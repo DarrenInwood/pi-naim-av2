@@ -15,5 +15,5 @@ const av2 = new NaimAV2({
     comPort: '/dev/ttyUSB0',
     osdName: 'Naim AV2',
     tvInput: 'OP2',
-    moodeInput: 'CO1'
+    moodeInput: 'CO2'
 });
