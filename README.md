@@ -11,6 +11,12 @@ Also detects audio output from a streamer eg. Moode running on the same Pi.
 Stretch goal, allow a Chromecast Audio plugged in to the AV2 to also be
 detected and auto-power on/switch inputs/control volume.
 
+## Hardware
+
+Aside from the obvious audio connections between your Pi, TV, and AV2, you will need a USB-RS232 dongle cable connected between the Pi and the AV2's serial port.
+
+You will also need to change the 'DATA' setting on the AV2 to 'EXT' - the default is 'RC5'.  This tells the AV2 to listen to incoming messages on the RS-232 port.
+
 ## Development
 
 ### Set up a dev environment
