@@ -76,6 +76,14 @@ export class NaimAV2 extends EventEmitter {
      */
     protected cecPowerSyncInterval: NodeJS.Timeout | null = null;
 
+    /**
+     * State to keep track of whether the TV and Raspberry Pi are active.
+     * 
+     * We turn off only if all sources are inactive.
+     */
+    protected tvActive: boolean = false;
+    protected moodeActive: boolean = false;
+
     protected state: NaimAV2State = {
         system: {
             power: false,
@@ -143,22 +151,28 @@ export class NaimAV2 extends EventEmitter {
         extra: {}
     };
 
+    protected options: NaimAV2Options;
+
     constructor(
         options: NaimAV2Options = defaultOptions
     ) {
         super();
+
+        this.options = options;
         
         this.moode = new MoodePlayer();
         this.moode.on('play', () => {
-            // Make sure the power is on and we're on the correct input
+            this.moodeActive = true;
+            this.syncInputAndPower();
         });
         this.moode.on('stop', () => {
-            // If the TV is on, switch back to that input; otherwise turn off
+            this.moodeActive = false;
+            this.syncInputAndPower();
         });
 
-        this.port = this.createNaimAV2(options);
+        this.port = this.createNaimAV2();
 
-        const { osdName, tvInput } = options;
+        const { osdName, tvInput } = this.options;
 
         // We need to use monitor mode as CecMonitor appears to have an issue comparing
         // sources/targets otherwise
@@ -178,12 +192,8 @@ export class NaimAV2 extends EventEmitter {
                 LogicalAddress.TV,
                 OperationCode.GIVE_AUDIO_STATUS
             );
-            if (!this.getPower()) {
-                this.setPower(true);
-            }
-            if (this.getInput() !== tvInput) {
-                this.setInput(tvInput);
-            }
+            this.tvActive = true;
+            this.syncInputAndPower();
         });
 
         // If the TV sends a standby message, and we're on it's input, turn off
@@ -197,9 +207,8 @@ export class NaimAV2 extends EventEmitter {
                 return;
             }
             log('STANDBY - %j', packet);
-            if (this.getPower()) {
-                this.setPower(false);
-            }
+            this.tvActive = false;
+            this.syncInputAndPower();
         });
 
         // If the TV reports it is on, and the AV2 is off, turn the AV2 on.
@@ -216,12 +225,14 @@ export class NaimAV2 extends EventEmitter {
             }
             if (status != STATUS_OFF && !this.getPower()) {
                 log('REPORT_POWER_STATUS turning AV2 on');
-                this.setPower(true);
+                this.tvActive = true;
+                this.syncInputAndPower();
                 return;
             }
             if (status == STATUS_OFF && this.getPower() && this.getInput() == options.tvInput) {
                 log('REPORT_POWER_STATUS turning AV2 off');
-                this.setPower(false);
+                this.tvActive = false;
+                this.syncInputAndPower();
                 return;
             }
         });
@@ -249,7 +260,7 @@ export class NaimAV2 extends EventEmitter {
 
         // Periodically refresh TV power state
         this.cecPowerSyncInterval = setInterval(() => {
-            this.cec.executeOperation(LogicalAddress.TV, OperationCode.GIVE_DEVICE_POWER_STATUS);
+            this.cec.sendCommand(0x50, 0x8F);
         }, 5000);
 
         this.on('stateChange', (state: NaimAV2State, prevState: NaimAV2State) => {
@@ -266,9 +277,9 @@ export class NaimAV2 extends EventEmitter {
         });
     }
 
-    protected createNaimAV2(options: NaimAV2Options): NaimAV2Port {
+    protected createNaimAV2(): NaimAV2Port {
         const port = new NaimAV2Port({
-            comPort: options.comPort
+            comPort: this.options.comPort
         });
 
         // Incoming packets update the internal state
@@ -292,6 +303,34 @@ export class NaimAV2 extends EventEmitter {
         });
 
         return port;
+    }
+
+    /**
+     * Sync the power and input selector to the state of the connected TV and Moode
+     */
+    protected syncInputAndPower() {
+        // Moode takes precedence
+        if (this.moodeActive) {
+            if (!this.getPower()) {
+                this.setPower(true);
+            }
+            if (this.getInput() !== this.options.moodeInput) {
+                this.setInput(this.options.moodeInput);
+            }
+            return;
+        }
+        // Then TV
+        if (this.tvActive) {
+            if (!this.getPower()) {
+                this.setPower(true);
+            }
+            if (this.getInput() !== this.options.tvInput) {
+                this.setInput(this.options.tvInput);
+            }
+            return;
+        }
+        // Otherwise turn off
+        this.setPower(false);
     }
 
     /**

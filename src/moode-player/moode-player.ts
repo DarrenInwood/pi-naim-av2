@@ -44,9 +44,10 @@ export class MoodePlayer extends EventEmitter {
     protected config: MoodePlayerOptions;
 
     /**
-     * Whether or not the Raspberry Pi is currently outputting audio
+     * Whether or not the Raspberry Pi is currently outputting audio.
+     * Default null ensures we send at least one event on startup to sync the state.
      */
-    protected playing: boolean = false;
+    protected playing: boolean | null = null;
 
     /**
      * The current media info
@@ -55,6 +56,13 @@ export class MoodePlayer extends EventEmitter {
 
     protected audioOutputPollInterval: NodeJS.Timeout | null = null;
     protected mediaInfoPollInterval: NodeJS.Timeout | null = null;
+
+    /**
+     * We only send an active state change after 2 successive reads
+     * that pick a state change.  This is because we get a brief period between
+     * tracks where the audio is muted.
+     */
+    protected debounce: number = 0;
 
     constructor(config: MoodePlayerOptions | null = null) {
         super();
@@ -94,9 +102,15 @@ export class MoodePlayer extends EventEmitter {
                 }
             });
             if (nowPlaying !== this.playing) {
-                this.playing = nowPlaying;
-                this.emit(nowPlaying ? 'play' : 'stop');
-                log('Emitted %s', nowPlaying ? 'play' : 'stop')
+                // We need quite a long debounce period in case it takes a while for
+                // Spotify to start streaming the next track after a skip
+                this.debounce++;
+                if (this.debounce >= 12) {
+                    this.debounce = 0;
+                    this.playing = nowPlaying;
+                    this.emit(nowPlaying ? 'play' : 'stop');
+                    log('Emitted %s', nowPlaying ? 'play' : 'stop')    
+                }
             }
         });
     }
