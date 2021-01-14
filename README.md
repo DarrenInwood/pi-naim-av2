@@ -49,13 +49,23 @@ the `debug` package what to output debug info for.
 
 ## Building
 
-Run `npm run build`.  This will compile Typescript to Javascript.
+Run `npm run build` in the root of this repository.  This will compile Typescript to Javascript in the `build` folder.
 
 ## Installing as a service
 
 An easy way to install as a service is via (PM2)[https://github.com/Unitech/pm2].
 
 1. Install PM2 globally on your Pi - `sudo npm install -g pm2`
-2. Start the application you've built - `cd build && pm2 start index.js --name 'pi-naim-av2'`
-3. Tell PM2 to start on boot - `pm2 startup` then copy/paste the generated output
-4. Tell PM2 to restart this process again on boot - `pm2 save`
+2. Tell PM2 to run on boot - `pm2 startup` then copy/paste the generated output
+3. Build the application - see above.
+4. Start the application you've just built using PM2 - `cd build && pm2 start index.js --name 'pi-naim-av2'`
+5. Tell PM2 to restart this process again on boot - `pm2 save`
+
+If you make some code changes, you will need to build the application again and then restart it via PM2:
+
+    pm2 stop pi-naim-av2
+    npm run start:dev
+    <make code changes>
+    npm run build
+    pm2 start pi-naim-av2
+
